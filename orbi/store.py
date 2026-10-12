@@ -43,13 +43,27 @@ KEEP_DAYS = 90  # history older than this is pruned; anything newer can't be del
 # History locks. orbi_keep_after() exists only on Orbi Control's own connections, so any other program that
 # tries to delete from these tables (a python one-liner, sqlite3.exe, a DB browser) fails with "no such
 # function"; the app itself can only delete what has aged past KEEP_DAYS. tamper.py notices if they're dropped.
+#
+# orbi_app_write() is the same trick applied to parental controls directly: it exists only on Orbi Control's
+# own connections, so a raw sqlite3 connection can list or read these tables fine but any INSERT/UPDATE/DELETE
+# touching what restricts a device fails with "no such function", instead of silently taking effect. Changes
+# made this way still need the PIN, because they go through the app's own API, which is what calls these.
 LOCKS = """
 CREATE TRIGGER IF NOT EXISTS events_keep BEFORE DELETE ON events WHEN OLD.ts >= orbi_keep_after()
 BEGIN SELECT RAISE(ABORT, 'Orbi Control keeps its history'); END;
 CREATE TRIGGER IF NOT EXISTS router_log_keep BEFORE DELETE ON router_log WHEN OLD.ts >= orbi_keep_after()
 BEGIN SELECT RAISE(ABORT, 'Orbi Control keeps its history'); END;
+CREATE TRIGGER IF NOT EXISTS devices_profile_guard BEFORE UPDATE OF profile_id, manual_block ON devices
+WHEN NOT orbi_app_write() BEGIN SELECT RAISE(ABORT, 'Orbi Control protects this'); END;
+CREATE TRIGGER IF NOT EXISTS rules_insert_guard BEFORE INSERT ON rules
+WHEN NOT orbi_app_write() BEGIN SELECT RAISE(ABORT, 'Orbi Control protects this'); END;
+CREATE TRIGGER IF NOT EXISTS rules_update_guard BEFORE UPDATE ON rules
+WHEN NOT orbi_app_write() BEGIN SELECT RAISE(ABORT, 'Orbi Control protects this'); END;
+CREATE TRIGGER IF NOT EXISTS rules_delete_guard BEFORE DELETE ON rules
+WHEN NOT orbi_app_write() BEGIN SELECT RAISE(ABORT, 'Orbi Control protects this'); END;
 """
-LOCK_NAMES = {"events_keep", "router_log_keep"}
+LOCK_NAMES = {"events_keep", "router_log_keep", "devices_profile_guard", "rules_insert_guard", "rules_update_guard",
+              "rules_delete_guard"}
 
 
 # Who is making the current change through the web app, e.g. "Kids-iPad (192.168.1.40)".
@@ -83,6 +97,7 @@ class Store:
             conn.execute("PRAGMA foreign_keys=ON")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.create_function("orbi_keep_after", 0, lambda: time.time() - KEEP_DAYS * 86400)
+            conn.create_function("orbi_app_write", 0, lambda: 1)
             self._local.conn = conn
         return conn
 

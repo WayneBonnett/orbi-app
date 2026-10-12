@@ -421,16 +421,21 @@ def create_app(monitor: Monitor) -> FastAPI:
     @app.patch("/api/devices/{mac}")
     def patch_device(mac: str, body: DevicePatch):
         mac = norm_mac(mac)
-        if not store.one("SELECT mac FROM devices WHERE mac=?", (mac,)):
+        dev = store.one("SELECT * FROM devices WHERE mac=?", (mac,))
+        if not dev:
             raise HTTPException(404, "Unknown device")
+        name = dev["alias"] or dev["router_name"] or mac
         if body.alias is not None:
             store.x("UPDATE devices SET alias=? WHERE mac=?", (body.alias.strip()[:60], mac))
         if body.clear_profile:
             store.x("UPDATE devices SET profile_id=NULL WHERE mac=?", (mac,))
+            store.event("parental", f"{name} moved off any profile")
         elif body.profile_id is not None:
-            if not store.one("SELECT id FROM profiles WHERE id=?", (body.profile_id,)):
+            p = store.one("SELECT name FROM profiles WHERE id=?", (body.profile_id,))
+            if not p:
                 raise HTTPException(404, "Unknown profile")
             store.x("UPDATE devices SET profile_id=? WHERE mac=?", (body.profile_id, mac))
+            store.event("parental", f"{name} moved to {p['name']}")
         monitor.enforce()
         return {"ok": True}
 
@@ -557,25 +562,38 @@ def create_app(monitor: Monitor) -> FastAPI:
 
     @app.post("/api/profiles/{pid}/rules")
     def add_rule(pid: int, body: RuleBody):
-        _profile_or_404(pid)
+        p = _profile_or_404(pid)
         _validate_rule(body)
+        label = body.label.strip()[:30] or "Schedule"
         rid = store.x("INSERT INTO rules(profile_id,label,days,start,end,enabled) VALUES(?,?,?,?,?,?)",
-                      (pid, body.label.strip()[:30] or "Schedule", body.days, body.start, body.end, int(body.enabled)))
+                      (pid, label, body.days, body.start, body.end, int(body.enabled)))
+        store.event("parental", f"{p['name']}: {label} schedule added", detail=f"{body.start}–{body.end}")
         _apply()
         return {"id": rid}
 
     @app.put("/api/rules/{rid}")
     def update_rule(rid: int, body: RuleBody):
-        if not store.one("SELECT id FROM rules WHERE id=?", (rid,)):
+        rule = store.one("SELECT * FROM rules WHERE id=?", (rid,))
+        if not rule:
             raise HTTPException(404, "Unknown schedule")
         _validate_rule(body)
         store.x("UPDATE rules SET label=?, days=?, start=?, end=?, enabled=? WHERE id=?",
                 (body.label.strip()[:30] or "Schedule", body.days, body.start, body.end, int(body.enabled), rid))
+        p = store.one("SELECT name FROM profiles WHERE id=?", (rule["profile_id"],))
+        who = p["name"] if p else "A profile's"
+        if bool(rule["enabled"]) != body.enabled:
+            store.event("parental", f"{who}: {rule['label']} schedule turned " + ("on" if body.enabled else "off"))
+        else:
+            store.event("parental", f"{who}: {rule['label']} schedule changed", detail=f"{body.start}–{body.end}")
         return _apply()
 
     @app.delete("/api/rules/{rid}")
     def delete_rule(rid: int):
+        rule = store.one("SELECT * FROM rules WHERE id=?", (rid,))
         store.x("DELETE FROM rules WHERE id=?", (rid,))
+        if rule:
+            p = store.one("SELECT name FROM profiles WHERE id=?", (rule["profile_id"],))
+            store.event("parental", f"{(p['name'] if p else 'A profile')}: {rule['label']} schedule removed")
         return _apply()
 
     def _profile_or_404(pid):

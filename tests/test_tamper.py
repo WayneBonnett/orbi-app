@@ -66,6 +66,39 @@ def test_other_programs_cannot_delete_history(monitor):
     assert monitor.store.one("SELECT COUNT(*) n FROM events")["n"] == 1
 
 
+def test_other_programs_cannot_move_or_unblock_devices(monitor):
+    monitor.store.x("INSERT INTO profiles(name) VALUES('Kids')")
+    pid = monitor.store.one("SELECT id FROM profiles WHERE name='Kids'")["id"]
+    monitor.store.x("INSERT INTO devices(mac, manual_block) VALUES('AA:00:00:00:00:09', 1)")
+    db = outside(monitor.store.path)
+    with pytest.raises(sqlite3.OperationalError, match="orbi_app_write"):
+        db.execute("UPDATE devices SET profile_id=? WHERE mac='AA:00:00:00:00:09'", (pid,))
+    with pytest.raises(sqlite3.OperationalError, match="orbi_app_write"):
+        db.execute("UPDATE devices SET manual_block=0 WHERE mac='AA:00:00:00:00:09'")
+    dev = monitor.store.one("SELECT profile_id, manual_block FROM devices WHERE mac='AA:00:00:00:00:09'")
+    assert dev["profile_id"] is None and dev["manual_block"] == 1
+    # the app itself is unaffected
+    monitor.store.x("UPDATE devices SET profile_id=?, manual_block=0 WHERE mac='AA:00:00:00:00:09'", (pid,))
+    dev = monitor.store.one("SELECT profile_id, manual_block FROM devices WHERE mac='AA:00:00:00:00:09'")
+    assert dev["profile_id"] == pid and dev["manual_block"] == 0
+
+
+def test_other_programs_cannot_change_schedules(monitor):
+    monitor.store.x("INSERT INTO profiles(name) VALUES('Kids')")
+    pid = monitor.store.one("SELECT id FROM profiles WHERE name='Kids'")["id"]
+    monitor.store.x("INSERT INTO rules(profile_id,label,days,start,end,enabled) VALUES(?,'Bedtime','0123456','20:00','07:00',1)", (pid,))
+    rid = monitor.store.one("SELECT id FROM rules WHERE profile_id=?", (pid,))["id"]
+    db = outside(monitor.store.path)
+    with pytest.raises(sqlite3.OperationalError, match="orbi_app_write"):
+        db.execute("UPDATE rules SET enabled=0 WHERE id=?", (rid,))
+    with pytest.raises(sqlite3.OperationalError, match="orbi_app_write"):
+        db.execute("INSERT INTO rules(profile_id,label,days,start,end,enabled) VALUES(?,'Sneaky','0123456','00:00','00:00',0)", (pid,))
+    with pytest.raises(sqlite3.OperationalError, match="orbi_app_write"):
+        db.execute("DELETE FROM rules WHERE id=?", (rid,))
+    assert monitor.store.one("SELECT enabled FROM rules WHERE id=?", (rid,))["enabled"] == 1
+    assert monitor.store.one("SELECT COUNT(*) n FROM rules")["n"] == 1
+
+
 def test_pruning_still_removes_old_history(monitor):
     monitor.store.event("block", "ancient", ts=time.time() - 100 * 86400)
     monitor.store.event("block", "recent")
