@@ -2,6 +2,13 @@
 
 What changed in each version, newest first. The same notes appear in the app under More → Updates.
 
+## 1.1.10 (2026-10-12)
+
+### Parental controls that can't be quietly bypassed
+
+- Other programs on this PC can no longer move a device to a different profile, change its block status, or add, edit, or remove a schedule - the same protection that already covered History now covers these too.
+- Moving a device between profiles, and adding, changing, or removing a schedule, now show up in History with who did it.
+
 ## 1.1.9 (2026-10-10)
 
 ### History that can't be quietly erased
