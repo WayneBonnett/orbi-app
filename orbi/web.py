@@ -117,6 +117,10 @@ class DnsAccountBody(BaseModel):
     network: str = ""  # OpenDNS, only needed with more than one network on the account
 
 
+class PushSetupBody(BaseModel):
+    server: str | None = None  # None: ntfy.sh
+
+
 class SiteBlockBody(BaseModel):
     mode: str  # never | always | perschedule
     keywords: list[str] = []
@@ -962,6 +966,82 @@ def create_app(monitor: Monitor) -> FastAPI:
             return res
         if not monitor.run_job("filtering", apply):
             raise HTTPException(409, "A filter change is already running")
+        return {"ok": True}
+
+    # ---------- phone alerts (ntfy) ----------
+    def _push_status():
+        from . import push
+        s = config.load()
+        return {"configured": bool(s.get("push_topic_enc")), "enabled": push.enabled(s), "server": s.get("push_server") or push.DEFAULT_SERVER,
+                "last": s.get("push_last")}
+
+    def _push_code():
+        from . import push
+        url = push.subscribe_url()
+        return {"url": url, "topic": push.topic(), "qr_svg": _qr_svg(url)}
+
+    @app.get("/api/push")
+    def push_status():
+        return _push_status()
+
+    @app.post("/api/push/setup")
+    def push_setup(body: PushSetupBody):
+        """A new random code. A phone still on the old code is told, so this can't quietly cut a parent off."""
+        from . import push
+        old = config.load()
+        if old.get("push_topic_enc"):
+            push.send_now("Phone alerts moved to a new code", f"Set up again on {ACTOR.get() or 'Orbi Control'}. This phone "
+                          "won't get alerts any more. If that wasn't you, sign in to Orbi Control and check History.", settings=old)
+        try:
+            push.new_topic(body.server)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        test = push.send_now("Orbi Control alerts are on", "Alerts from your home network will show up here.", priority=3)
+        store.event("action", "Phone alerts set up", detail=_push_status()["server"])
+        return {**_push_status(), **_push_code(), "test": test}
+
+    @app.post("/api/push/show")
+    def push_show():
+        """The code a phone subscribes with. Whoever has it can read every alert, so each showing is recorded."""
+        from . import push
+        if not config.load().get("push_topic_enc"):
+            raise HTTPException(404, "Phone alerts aren't set up")
+        store.event("action", "Phone-alert code shown", severity="warn")
+        push.send("Phone-alert code was shown", f"On {ACTOR.get() or 'Orbi Control'}. If that wasn't you, choose New code in "
+                  "More → Phone alerts and subscribe again.")
+        return _push_code()
+
+    @app.post("/api/push/test")
+    def push_test():
+        from . import push
+        return push.send_now("Test from Orbi Control", "If you can read this, phone alerts work.", priority=3)
+
+    @app.put("/api/push")
+    def push_enable(body: EnabledBody):
+        from . import push
+        s = config.load()
+        if body.enabled and not s.get("push_topic_enc"):
+            raise HTTPException(400, "Set up phone alerts first")
+        if not body.enabled and push.enabled(s):  # the phone hears about it before it goes quiet
+            push.send_now("Phone alerts turned off", f"By {ACTOR.get() or 'Orbi Control'}. This is the last alert you'll get here "
+                          "until they're turned back on.", settings=s)
+        config.save({"push_enabled": body.enabled})
+        store.event("action", "Phone alerts turned " + ("on" if body.enabled else "off"), severity="info" if body.enabled else "warn")
+        return _push_status()
+
+    # ---------- remote-access watch ----------
+    @app.get("/api/exposure")
+    def exposure_status():
+        from . import exposure
+        found = store.get("exposure") or {}
+        devices = sorted(({**e, "services": [{"port": p, "name": exposure.PORTS.get(p, "port")} for p in e["ports"]]}
+                          for e in found.values()), key=lambda e: (not e["ports"], e["name"].lower()))
+        return {"ts": store.get("exposure_ts"), "devices": devices, "ports": exposure.PORTS, "job": monitor.jobs.get("exposure")}
+
+    @app.post("/api/exposure/scan")
+    def exposure_scan():
+        if not monitor.run_job("exposure", lambda: len(monitor.check_exposure())):
+            raise HTTPException(409, "A check is already running")
         return {"ok": True}
 
     @app.post("/api/filtering/protect")

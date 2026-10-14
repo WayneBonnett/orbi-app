@@ -726,7 +726,7 @@ async function renderMore() {
   } });
   const advCard = h("section", { class: "card" }, h("h2", {}, "Advanced mode"),
     h("label", { class: "switch" }, "Show the Advanced tab (Wi-Fi networks, DHCP, logs, VPN, firewall rules…)", advToggle));
-  setView(alertCard, phone, remoteCard(), advCard, monitoring, routerCard, pinCard, securityCard, updatesCard(settings),
+  setView(alertCard, pushCard(), exposureCard(), phone, remoteCard(), advCard, monitoring, routerCard, pinCard, securityCard, updatesCard(settings),
     h("div", { class: "muted small center" }, "Orbi Control runs on your PC and talks to the Orbi directly — no cloud. Outside connections: the optional update check to GitHub, and internet checks to 1.1.1.1, 8.8.8.8 and 9.9.9.9."));
 }
 
@@ -847,6 +847,89 @@ async function waitJob(name, label) {
     clearTimeout(toastTimer);
     await new Promise((r) => setTimeout(r, 2500));
   }
+}
+
+// ---------- phone alerts (ntfy) ----------
+function pushCard() {
+  const card = h("section", { class: "card" }, h("h2", {}, "Phone alerts"), h("div", { class: "muted small" }, h("span", { class: "spinner" })));
+  const render = (p) => {
+    if (!p.configured) {
+      fill(card, h("h2", {}, "Phone alerts"),
+        h("p", { class: "muted small", style: "margin:0 0 8px" }, "Get every alert on your phone, wherever you are, not just on this PC. Uses the free ntfy app; no account needed."),
+        h("button", { class: "btn primary", onclick: () => pushSetupSheet(p, render) }, "Set up phone alerts"));
+      return;
+    }
+    const on = h("input", { type: "checkbox", checked: p.enabled, onchange: (e) => act(null, async () => {
+      if (!e.target.checked && !confirm("Turn off phone alerts? Your phone gets one last alert saying so.")) { e.target.checked = true; return; }
+      render(await api("/api/push", { method: "PUT", body: { enabled: e.target.checked } }));
+    }).catch(() => render(p)) });
+    fill(card, h("h2", {}, "Phone alerts"),
+      h("label", { class: "switch" }, "Send alerts to my phone", on),
+      p.last ? h("div", { class: p.last.ok ? "muted small" : "error-text small" }, `Last alert ${p.last.ok ? "delivered" : "failed: " + p.last.detail} · ${ago(p.last.ts)}`) : null,
+      h("div", { class: "btns", style: "margin-top:8px" },
+        h("button", { class: "btn small", onclick: (e) => act(e.currentTarget, async () => {
+          const r = await api("/api/push/test", { body: {} });
+          render(await api("/api/push"));
+          return { note: r.ok ? "Test sent. Check your phone" : `Not sent: ${r.detail}` };
+        }) }, "Send test"),
+        h("button", { class: "btn small", onclick: (e) => act(e.currentTarget, async () => pushCodeSheet(await api("/api/push/show", { body: {} }), false)) }, "Show code"),
+        h("button", { class: "btn small", onclick: () => pushSetupSheet(p, render) }, "New code")),
+      h("div", { class: "muted small", style: "margin-top:8px" }, "Anyone with the code can read your alerts. Showing it is recorded in History and sent to your phone."));
+  };
+  api("/api/push").then(render).catch((e) => fill(card, h("h2", {}, "Phone alerts"), h("div", { class: "error-text" }, e.message)));
+  return card;
+}
+
+function pushSetupSheet(p, render) {
+  const server = h("input", { value: p.server || "https://ntfy.sh", autocapitalize: "off", spellcheck: "false" });
+  const adv = h("details", {}, h("summary", { class: "muted small" }, "Use my own ntfy server"), h("label", { class: "field" }, "Server", server));
+  openSheet(h("h3", {}, p.configured ? "New phone-alert code" : "Set up phone alerts"),
+    h("ol", { class: "small", style: "padding-left:18px;margin:0 0 8px" },
+      h("li", {}, "Install the free ntfy app from the App Store or Google Play."),
+      h("li", {}, "Tap the button below. A code and QR code appear."),
+      h("li", {}, "In ntfy, tap + (Subscribe to topic) and type the code. On Android you can scan the QR code instead.")),
+    p.configured ? h("p", { class: "error-text small" }, "Any phone on the current code stops getting alerts (it's told so first) and needs the new code.") : null,
+    adv,
+    h("div", { class: "btns" }, h("button", { class: "btn", onclick: closeSheet }, "Cancel"),
+      h("button", { class: "btn primary", onclick: (e) => act(e.currentTarget, async () => {
+        const r = await api("/api/push/setup", { body: { server: server.value || null } });
+        render(r);
+        pushCodeSheet(r, true);
+        return { note: r.test.ok ? "A test alert is on its way" : `Saved, but the test didn't send: ${r.test.detail}` };
+      }) }, p.configured ? "Make a new code" : "Set up")));
+}
+
+function pushCodeSheet(c, fresh) {
+  openSheet(h("h3", {}, fresh ? "Subscribe your phone" : "Phone-alert code"),
+    h("div", { style: "display:flex;gap:16px;align-items:center;flex-wrap:wrap" },
+      h("div", { class: "qr", html: c.qr_svg }),
+      h("div", { style: "flex:1;min-width:200px" }, h("div", { class: "muted small" }, "Code (topic)"),
+        h("div", { style: "font-weight:600;word-break:break-all;user-select:all" }, c.topic),
+        h("div", { class: "muted small", style: "margin-top:6px;word-break:break-all" }, `Server: ${c.url.slice(0, c.url.length - c.topic.length - 1)}`))),
+    h("p", { class: "muted small" }, "In ntfy tap +, enter the code, and keep the server as it is (or set it to the one above). A test alert is sent when you set up, so you'll know it worked."),
+    h("button", { class: "btn primary block", onclick: closeSheet }, "Done"));
+}
+
+// ---------- remote-access watch ----------
+function exposureCard() {
+  const card = h("section", { class: "card" }, h("h2", {}, "Remote access"), h("div", { class: "muted small" }, h("span", { class: "spinner" })));
+  const render = (x) => {
+    const exposed = x.devices.filter((d) => d.ports.length);
+    const check = h("button", { class: "btn small act", onclick: (e) => act(e.currentTarget, async () => {
+      await api("/api/exposure/scan", { body: {} });
+      await waitJob("exposure", "Checking every device");
+      render(await api("/api/exposure"));
+      return { note: "Check finished" };
+    }) }, "Check now");
+    fill(card, h("h2", {}, "Remote access", check),
+      !x.ts ? h("div", { class: "muted small" }, "Not checked yet. Runs every 30 minutes.")
+        : exposed.length ? exposed.map((d) => h("div", { class: "row" }, h("div", { class: "main" },
+          h("div", { class: "name" }, d.name), h("div", { class: "meta", style: "white-space:normal" }, `${d.services.map((s) => `${s.name} (${s.port})`).join(", ")} · ${d.ip}`))))
+          : h("div", { class: "muted small" }, "✓ Nothing in the house accepts remote control."),
+      x.ts ? h("div", { class: "muted small", style: "margin-top:8px" }, `Checked ${x.devices.length} devices, including this PC and the router · ${ago(x.ts)}. You're alerted when any device starts accepting SSH, Remote Desktop, VNC, TeamViewer, AnyDesk or PowerShell remoting.`) : null);
+  };
+  api("/api/exposure").then(render).catch((e) => fill(card, h("h2", {}, "Remote access"), h("div", { class: "error-text" }, e.message)));
+  return card;
 }
 
 // ---------- content filtering (router DNS) ----------

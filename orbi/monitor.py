@@ -134,7 +134,7 @@ NET_LABELS = {"iot": "IoT Wi-Fi", "guest": "Guest Wi-Fi", "main": "main Wi-Fi"}
 class Monitor:
     def __init__(self, store: Store, notify=lambda title, msg: None, router_factory=None, ui_factory=None, log_fetcher=None):
         self.store = store
-        self.notify = notify
+        self._tray_notify = notify
         self._router_factory = router_factory or self._default_router
         self.ui_factory = ui_factory or self._default_ui
         self.log_fetcher = log_fetcher or self._default_log_fetcher
@@ -186,6 +186,14 @@ class Monitor:
         self.router = self._router_factory()
         self.wake_enforcer.set()
 
+    def notify(self, title, message):
+        """Every alert goes to the tray on this PC and, when set up, to the parent's phone."""
+        from . import push
+        try:
+            self._tray_notify(title, message)
+        finally:
+            push.send(title, message)
+
     def protected_macs(self) -> set[str]:
         return self.protected | {norm_mac(m) for m in config.load().get("protected_macs", [])}
 
@@ -195,7 +203,8 @@ class Monitor:
         loops = {"health": self.health_loop, "scan": self.scan_loop, "enforce": self.enforce_loop,
                  "traffic": self.traffic_loop, "speedtest": self.speedtest_schedule_loop, "maintenance": self.maintenance_loop,
                  "routerlog": self.routerlog_loop, "updates": self.update_loop, "weekly": self.weekly_loop,
-                 "restart": self.restart_loop, "dnsaccount": self.dns_account_loop}
+                 "restart": self.restart_loop, "dnsaccount": self.dns_account_loop,
+                 "exposure": self.exposure_loop}
         if self.tamper:
             loops["tamper"] = self.tamper.loop
         self._loops = loops
@@ -1203,6 +1212,62 @@ class Monitor:
             elif weakened:
                 self.notify("Adult-site filtering turned off",
                             f"The router switched from {PROVIDERS[before]['name']} to {name}, which doesn't block adult sites")
+
+    # ---- remote-access watch: SSH, Remote Desktop, VNC and the like on any device in the house ----
+    def exposure_loop(self):
+        self.stop_event.wait(180)
+        self._every(lambda: 30 * 60, self.check_exposure)
+
+    def check_exposure(self) -> dict:
+        """Check every online device, this PC and the router. Alerts when a device starts accepting remote control;
+        the very first check reports whatever is already open, since nobody has seen it yet."""
+        from . import exposure
+        s = config.load()
+        targets = {}
+        for r in self.store.q("SELECT mac, alias, router_name, model, last_ip FROM devices WHERE online=1 AND last_ip != ''"):
+            targets[r["last_ip"]] = (r["mac"], r["alias"] or r["router_name"] or r["model"] or r["mac"])
+        local_ip = (internet_route(s["router_host"]) or {}).get("local_ip")
+        if local_ip:
+            targets.setdefault(local_ip, ("this-pc", "This PC"))
+        targets.setdefault(s["router_host"], ("router", "The Orbi router"))
+        found = exposure.scan(list(targets))
+
+        prev = self.store.get("exposure")
+        first, prev, now = prev is None, prev or {}, {}
+        opened, closed = [], []
+        for ip, ports in found.items():
+            mac, name = targets[ip]
+            before = set((prev.get(mac) or {}).get("ports", []))
+            now[mac] = {"ip": ip, "name": name, "ports": sorted(ports), "ts": time.time()}
+            if not first and set(ports) - before:
+                opened.append((name, ip, mac, sorted(set(ports) - before)))
+            if before - set(ports):
+                closed.append((name, ip, mac, sorted(before - set(ports))))
+        for mac, entry in prev.items():  # offline now: remember what it had, so coming back isn't "new"
+            if mac not in now and time.time() - entry.get("ts", 0) < 30 * 86400:
+                now[mac] = entry
+        self.store.put("exposure", now)
+        self.store.put("exposure_ts", time.time())
+
+        if first:
+            exposed = [e for e in now.values() if e["ports"]]
+            if exposed:
+                listing = "; ".join(f"{e['name']} ({e['ip']}): {exposure.describe(e['ports'])}" for e in exposed)
+                self.store.event("remote_access", f"Remote access is open on {len(exposed)} device(s)", detail=listing, severity="warn")
+                self.notify("Remote access found", f"First check of the house: {listing}")
+            else:
+                self.store.event("remote_access", "Remote-access check: nothing in the house accepts remote control")
+        for name, ip, mac, ports in opened:
+            what = exposure.describe(ports)
+            self.store.event("remote_access", f"Remote access opened on {name}", detail=f"{what} at {ip}", severity="warn",
+                             mac="" if mac in ("router", "this-pc") else mac)
+            self.notify(f"Remote access opened on {name}",
+                        f"{what} is now accepting connections at {ip}. If you didn't set this up, someone may be "
+                        "trying to control it from another device.")
+        for name, ip, mac, ports in closed:
+            self.store.event("remote_access", f"Remote access closed on {name}", detail=f"{exposure.describe(ports)} at {ip}",
+                             mac="" if mac in ("router", "this-pc") else mac)
+        return now
 
     # ---- NextDNS / OpenDNS Home: they only filter while they know this home's internet address ----
     def dns_account_loop(self):
