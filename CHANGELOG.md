@@ -2,6 +2,17 @@
 
 What changed in each version, newest first. The same notes appear in the app under More → Updates.
 
+## 1.1.11 (2026-10-13)
+
+### More content filters
+- Six more services to choose from: Control D Family (blocks adult sites, forces Google and Bing SafeSearch and YouTube Restricted Mode), OpenDNS FamilyShield, Control D No Social (blocks social media but not adult sites), and Quad9, Cloudflare and CleanBrowsing malware-only filters.
+- The list is grouped by what each one blocks, and the malware-only and social-only ones say plainly that they don't block adult sites.
+- You get an alert if the router switches from a filter that blocks adult sites to one that doesn't.
+### Your own NextDNS or OpenDNS account
+- NextDNS and OpenDNS Home let you choose exactly what's blocked on their website. They only filter while they know your home's internet address, so Orbi Control keeps them told: right away when you connect, before switching the router, and every 15 minutes after. If that fails twice in a row you get an alert.
+- NextDNS connects with the update link from its setup page. OpenDNS Home uses your OpenDNS login, stored encrypted on this PC.
+- You have to confirm the account is set up before switching to it, since until then it filters nothing.
+
 ## 1.1.10 (2026-10-12)
 
 ### Parental controls that can't be quietly bypassed
