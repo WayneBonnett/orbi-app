@@ -417,3 +417,31 @@ def test_reports_credit_a_borrowed_address_to_the_device_using_it(monitor, fake_
     rep = report.build(monitor.store, {"AA:00:00:00:00:01", "AA:00:00:00:00:09"}, now - 86400)["devices"]
     assert rep["AA:00:00:00:00:09"]["bypass"] == {"Block-External-DNS-2": 1}
     assert rep["AA:00:00:00:00:01"]["bypass"] == {"Block-External-DNS-2": 1}
+
+
+def test_outage_left_open_by_a_restart_closes_at_first_good_check(monitor):
+    t0 = 1_000_000.0
+    eid = monitor.store.event("outage", "Internet down", detail="Cause.", severity="error", ts=t0)
+    rid = monitor.store.event("router_down", "Router unreachable from this PC", severity="error", ts=t0)
+    for ts, internet, router in ((t0 + 100, 0, 0), (t0 + 200, 0, 1), (t0 + 330, 1, 1), (t0 + 400, 1, 1)):
+        monitor.store.x("INSERT INTO checks(ts,internet,router,latency_ms) VALUES(?,?,?,?)", (ts, internet, router, 5 if internet else None))
+    monitor.recover_open_events()
+    ev = monitor.store.one("SELECT * FROM events WHERE id=?", (eid,))
+    assert ev["end_ts"] == t0 + 330 and "Back after 5m 30s" in ev["detail"] and "restarted during it" in ev["detail"]
+    assert monitor.store.one("SELECT end_ts FROM events WHERE id=?", (rid,))["end_ts"] == t0 + 200
+    assert monitor.state["outage_id"] is None and monitor.notes == []
+
+
+def test_outage_still_going_at_restart_is_carried_on(monitor, monkeypatch):
+    eid = monitor.store.event("outage", "Internet down", detail="Cause.", severity="error", ts=time.time() - 60)
+    monitor.recover_open_events()
+    assert monitor.state["outage_id"] == eid
+    up = {"internet": False}
+    monkeypatch.setattr(monitor_mod, "tcp_ok", lambda host, port, timeout=3.0: (5.0 if (up["internet"] or host.startswith("192.168")) else None))
+    monitor.check_health()
+    monitor.check_health()
+    assert len(monitor.store.q("SELECT * FROM events WHERE kind='outage'")) == 1  # not opened twice
+    up["internet"] = True
+    monitor.check_health()
+    ev = monitor.store.one("SELECT * FROM events WHERE id=?", (eid,))
+    assert ev["end_ts"] and "Back after" in ev["detail"] and monitor.state["outage_id"] is None

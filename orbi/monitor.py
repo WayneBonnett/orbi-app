@@ -199,6 +199,7 @@ class Monitor:
 
     # ---- lifecycle ----
     def start(self):
+        self.recover_open_events()
         self.reload_router()
         loops = {"health": self.health_loop, "scan": self.scan_loop, "enforce": self.enforce_loop,
                  "traffic": self.traffic_loop, "speedtest": self.speedtest_schedule_loop, "maintenance": self.maintenance_loop,
@@ -385,6 +386,26 @@ class Monitor:
 
     def _close(self, event_id, detail):
         self.store.close_event(event_id, detail=detail)
+
+    # kind, state key, and the health-check column that shows it was over
+    OPEN_EVENTS = (("outage", "outage_id", "internet=1"), ("router_down", "router_down_id", "router=1"),
+                   ("pc_offline", "pc_offline_id", "latency_ms IS NOT NULL"))
+
+    def recover_open_events(self):
+        """Outages are tracked in memory, so one an earlier run left open (restarted or killed mid-outage) would stay
+        "ongoing" forever. Close it at the first health check that found things working again; if none has yet,
+        carry it on so the health loop closes it."""
+        for kind, key, ok in self.OPEN_EVENTS:
+            rows = self.store.q("SELECT * FROM events WHERE kind=? AND end_ts IS NULL ORDER BY ts", (kind,))
+            for i, ev in enumerate(rows):
+                back = self.store.one(f"SELECT MIN(ts) AS t FROM checks WHERE ts > ? AND {ok}", (ev["ts"],))["t"]
+                if back is None and i + 1 < len(rows):
+                    back = rows[i + 1]["ts"]  # an even later one is open: this one can't outlast it
+                if back is None:
+                    self.state[key] = ev["id"]
+                    continue
+                self.store.close_event(ev["id"], end_ts=back, detail=f"{ev['detail']} Back after {fmt_duration(back - ev['ts'])} "
+                                                                    "(Orbi Control was restarted during it).")
 
     # ---- device & satellite scans ----
     def scan_loop(self):
