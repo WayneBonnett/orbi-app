@@ -2,6 +2,10 @@
 
 What changed in each version, newest first. The same notes appear in the app under More → Updates.
 
+## 1.1.13 (2026-10-13)
+
+- The remote-access watch now checks the house once a day instead of every 30 minutes. Check now under More → Remote access still runs it any time.
+
 ## 1.1.12 (2026-10-13)
 
 ### Alerts on your phone
