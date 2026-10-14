@@ -2,6 +2,10 @@
 
 What changed in each version, newest first. The same notes appear in the app under More → Updates.
 
+## 1.1.14 (2026-10-13)
+
+- Fixed: an internet outage (or router-unreachable or PC-offline alert) that was still open when Orbi Control restarted stayed "ongoing" in History forever and lowered the uptime figures. It's now closed at the moment the internet was first seen working again, and the stuck one is fixed when you update.
+
 ## 1.1.13 (2026-10-13)
 
 - The remote-access watch now checks the house once a day instead of every 30 minutes. Check now under More → Remote access still runs it any time.
