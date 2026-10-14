@@ -1216,7 +1216,7 @@ class Monitor:
     # ---- remote-access watch: SSH, Remote Desktop, VNC and the like on any device in the house ----
     def exposure_loop(self):
         self.stop_event.wait(180)
-        self._every(lambda: 30 * 60, self.check_exposure)
+        self._every(lambda: 24 * 3600, self.check_exposure)
 
     def check_exposure(self) -> dict:
         """Check every online device, this PC and the router. Alerts when a device starts accepting remote control;

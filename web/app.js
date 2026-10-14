@@ -922,7 +922,7 @@ function exposureCard() {
       return { note: "Check finished" };
     }) }, "Check now");
     fill(card, h("h2", {}, "Remote access", check),
-      !x.ts ? h("div", { class: "muted small" }, "Not checked yet. Runs every 30 minutes.")
+      !x.ts ? h("div", { class: "muted small" }, "Not checked yet. Runs once a day.")
         : exposed.length ? exposed.map((d) => h("div", { class: "row" }, h("div", { class: "main" },
           h("div", { class: "name" }, d.name), h("div", { class: "meta", style: "white-space:normal" }, `${d.services.map((s) => `${s.name} (${s.port})`).join(", ")} · ${d.ip}`))))
           : h("div", { class: "muted small" }, "✓ Nothing in the house accepts remote control."),
