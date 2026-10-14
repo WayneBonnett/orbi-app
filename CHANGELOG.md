@@ -2,6 +2,15 @@
 
 What changed in each version, newest first. The same notes appear in the app under More → Updates.
 
+## 1.1.12 (2026-10-13)
+
+### Alerts on your phone
+- Every alert can now go to your phone, wherever you are, not just to the tray on this PC. Set it up under More → Phone alerts with the free ntfy app (iPhone and Android, no account).
+- The code your phone subscribes with is random and stored encrypted. Showing it, replacing it and turning phone alerts off are recorded in History, and your phone is told first, so they can't be switched off without you knowing.
+### Remote-access watch
+- Every 30 minutes Orbi Control checks every device in the house, this PC and the router for remote-control services: SSH, Telnet, Remote Desktop, VNC, TeamViewer, AnyDesk and PowerShell remoting.
+- You get an alert when a device starts accepting them. The first check reports whatever is already open. See the list under More → Remote access.
+
 ## 1.1.11 (2026-10-13)
 
 ### More content filters
