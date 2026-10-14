@@ -59,7 +59,7 @@ def test_multiple_pins(client):
 def test_status_and_devices(client):
     setup_pin(client)
     st = client.get("/api/status").json()
-    assert st["info"]["model"] == "RBR750" and st["dns_filter"] == "CleanBrowsing Adult filter"
+    assert st["info"]["model"] == "RBR750" and st["dns_filter"] == "CleanBrowsing Adult"
     assert st["devices_online"] == 3
     devs = client.get("/api/devices").json()
     phone = next(d for d in devs if d["name"] == "kid-phone")

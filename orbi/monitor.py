@@ -195,7 +195,7 @@ class Monitor:
         loops = {"health": self.health_loop, "scan": self.scan_loop, "enforce": self.enforce_loop,
                  "traffic": self.traffic_loop, "speedtest": self.speedtest_schedule_loop, "maintenance": self.maintenance_loop,
                  "routerlog": self.routerlog_loop, "updates": self.update_loop, "weekly": self.weekly_loop,
-                 "restart": self.restart_loop}
+                 "restart": self.restart_loop, "dnsaccount": self.dns_account_loop}
         if self.tamper:
             loops["tamper"] = self.tamper.loop
         self._loops = loops
@@ -1188,17 +1188,50 @@ class Monitor:
 
     def _watch_filter(self, dns):
         """Alert when the router's DNS stops pointing at a family filter (or switches to a different one)."""
-        from .filtering import PROVIDERS, provider_for
+        from .filtering import PROVIDERS, blocks_adult, provider_for
         if not dns:
             return
         now, before = provider_for(dns), self.store.get("filter_last")
         self.store.put("filter_last", now or "")
         if before and now != before:
             name = PROVIDERS[now]["name"] if now else f"no filtering ({', '.join(dns)})"
+            weakened = blocks_adult(before) and not blocks_adult(now)
             self.store.event("filter_changed", "Content filter changed", detail=f"{PROVIDERS[before]['name']} → {name}",
-                             severity="warn" if not now else "info")
+                             severity="warn" if weakened or not now else "info")
             if not now:
                 self.notify("Content filter turned off", f"The router no longer uses {PROVIDERS[before]['name']}")
+            elif weakened:
+                self.notify("Adult-site filtering turned off",
+                            f"The router switched from {PROVIDERS[before]['name']} to {name}, which doesn't block adult sites")
+
+    # ---- NextDNS / OpenDNS Home: they only filter while they know this home's internet address ----
+    def dns_account_loop(self):
+        self.stop_event.wait(120)
+        self._every(lambda: 15 * 60, self._dns_account_tick)
+
+    def _dns_account_tick(self):
+        from .filtering import PROVIDERS, provider_for
+        key = provider_for((self.state["wan"] or {}).get("dns"))
+        if key and PROVIDERS[key]["kind"] == "account":
+            self.refresh_dns_account(key)
+
+    def refresh_dns_account(self, key, quiet=False) -> dict:
+        """Re-link the account; the second failure in a row alerts once, and recovery is recorded."""
+        from .filtering import PROVIDERS, refresh_account
+        res = {**refresh_account(key), "ts": time.time()}
+        last = self.store.get("dns_account_last") or {}
+        fails_before = (last.get(key) or {}).get("fails", 0)
+        # a parent saving or switching sees the result on screen, so only background checks count towards the alert
+        last[key] = {**res, "fails": 0 if res["ok"] else fails_before + (0 if quiet else 1)}
+        self.store.put("dns_account_last", last)
+        name = PROVIDERS[key]["name"]
+        if not quiet and last[key]["fails"] == 2:
+            self.store.event("filter_account", f"{name} may have stopped filtering", detail=res["detail"], severity="warn")
+            self.notify("Content filter may have stopped",
+                        f"{name} couldn't be told your home's internet address ({res['detail']}). Until it is, it may filter nothing.")
+        elif res["ok"] and fails_before >= 2:
+            self.store.event("filter_account", f"{name} is filtering again", detail=res["detail"])
+        return res
 
     # ---- app updates ----
     def update_loop(self):

@@ -28,14 +28,6 @@ log = logging.getLogger("orbi.web")
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 OPEN_PATHS = {"/api/session", "/api/login", "/api/setup"}
 INSTANCE = secrets.token_hex(8)  # changes on every start, so the page can tell the app restarted
-DNS_FILTERS = {  # what each family DNS service enforces was verified by querying them directly
-    "185.228.168.168": "CleanBrowsing Family filter", "185.228.169.168": "CleanBrowsing Family filter",
-    "185.228.168.10": "CleanBrowsing Adult filter", "185.228.169.11": "CleanBrowsing Adult filter",
-    "185.228.168.9": "CleanBrowsing Security filter", "185.228.169.9": "CleanBrowsing Security filter",
-    "208.67.222.123": "OpenDNS FamilyShield", "208.67.220.123": "OpenDNS FamilyShield",
-    "1.1.1.3": "Cloudflare for Families", "1.0.0.3": "Cloudflare for Families",
-    "94.140.14.15": "AdGuard Family", "94.140.15.16": "AdGuard Family",
-}
 HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -114,6 +106,15 @@ class AssignBody(BaseModel):
 
 class ProviderBody(BaseModel):
     provider: str
+    account_ready: bool = False  # the parent ticked "my account is set up" (account services only)
+
+
+class DnsAccountBody(BaseModel):
+    dns: list[str] = []  # NextDNS
+    link: str | None = None  # NextDNS; None keeps the saved one
+    user: str = ""  # OpenDNS
+    password: str | None = None  # OpenDNS; None keeps the saved one
+    network: str = ""  # OpenDNS, only needed with more than one network on the account
 
 
 class SiteBlockBody(BaseModel):
@@ -357,8 +358,8 @@ def create_app(monitor: Monitor) -> FastAPI:
         pc_offline = store.one("SELECT ts, title, detail FROM events WHERE id=?", (st["pc_offline_id"],)) if st["pc_offline_id"] else None
         last_speed = store.one("SELECT * FROM speedtests ORDER BY ts DESC LIMIT 1")
         traffic = store.one("SELECT ts, data FROM traffic ORDER BY ts DESC LIMIT 1")
-        dns = st["wan"].get("dns", []) if st["wan"] else []
-        filters = sorted({DNS_FILTERS[d] for d in dns if d in DNS_FILTERS})
+        from .filtering import PROVIDERS, provider_for
+        dns_key = provider_for(st["wan"].get("dns", []) if st["wan"] else [], s)
         counts = {
             "outages_24h": store.one("SELECT COUNT(*) c FROM events WHERE kind='outage' AND ts > ?", (time.time() - 86400,))["c"],
             "outages_7d": store.one("SELECT COUNT(*) c FROM events WHERE kind='outage' AND ts > ?", (time.time() - 7 * 86400,))["c"],
@@ -373,7 +374,7 @@ def create_app(monitor: Monitor) -> FastAPI:
             "router_devices": st.get("router_devices"), "last_scan": st["last_scan"], "scan_error": st["scan_error"],
             "speedtest": {**st["speedtest"], "last": last_speed}, "traffic": _traffic_json(traffic),
             "access_control": st["access_control"], "enforce_error": st["enforce_error"],
-            "dns_filter": filters[0] if filters else None, "router_error": monitor.router.last_error if monitor.router else None,
+            "dns_filter": PROVIDERS[dns_key]["name"] if dns_key else None, "router_error": monitor.router.last_error if monitor.router else None,
             **counts,
         }
 
@@ -892,22 +893,61 @@ def create_app(monitor: Monitor) -> FastAPI:
     @app.get("/api/filtering")
     def filtering_status(check: bool = False):
         from . import filtering
+        s = config.load()
         dns = (monitor.state["wan"] or {}).get("dns", [])
-        out = {"providers": filtering.PROVIDERS, "current": filtering.provider_for(dns), "dns": dns, "job": monitor.jobs.get("filtering")}
+        accounts = {  # never the passwords or the NextDNS link: those stay encrypted in settings
+            "nextdns": {"connected": bool(s.get("nextdns_link_enc")), "dns": s.get("nextdns_dns") or []},
+            "opendns_home": {"connected": bool(s.get("opendns_password_enc")), "user": s.get("opendns_user", ""),
+                             "network": s.get("opendns_network", "")},
+        }
+        for key, last in (store.get("dns_account_last") or {}).items():
+            if key in accounts:
+                accounts[key]["last"] = last
+        out = {"providers": filtering.providers(s), "current": filtering.provider_for(dns, s), "dns": dns, "accounts": accounts,
+               "job": monitor.jobs.get("filtering")}
         if check:
-            out["check"] = filtering.check(config.load()["router_host"])
+            out["check"] = filtering.check(s["router_host"])
         return out
+
+    @app.put("/api/filtering/account/{key}")
+    def set_dns_account(key: str, body: DnsAccountBody):
+        """Save a NextDNS / OpenDNS Home connection and try it straight away, so a typo shows up here, not later."""
+        from . import filtering
+        try:
+            if key == "nextdns":
+                filtering.save_nextdns(body.dns, body.link)
+            elif key == "opendns_home":
+                filtering.save_opendns(body.user, body.password, body.network)
+            else:
+                raise HTTPException(404, "Only NextDNS and OpenDNS Home use an account")
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        res = monitor.refresh_dns_account(key, quiet=True)
+        store.event("action", f"{filtering.PROVIDERS[key]['name']} connection saved",
+                    detail=res["detail"], severity="info" if res["ok"] else "warn")
+        return res
 
     @app.post("/api/filtering")
     def set_filtering(body: ProviderBody):
         from . import filtering
         if body.provider not in filtering.PROVIDERS:
             raise HTTPException(400, "Unknown provider")
+        is_account = filtering.PROVIDERS[body.provider]["kind"] == "account"
+        if is_account:
+            if not filtering.providers()[body.provider]["dns"]:
+                raise HTTPException(400, f"Connect your {filtering.PROVIDERS[body.provider]['name']} first")
+            if not body.account_ready:
+                raise HTTPException(400, "Confirm your account is set up and you've chosen what it blocks; "
+                                         "until then it filters nothing")
         router()
         s = config.load()
 
         def apply():
             from . import routercert
+            if is_account:  # link this home's address first: switching to an account service it doesn't know filters nothing
+                linked = monitor.refresh_dns_account(body.provider, quiet=True)
+                if not linked["ok"]:
+                    raise RuntimeError(f"Router not changed: {linked['detail']}")
             # Saving the router's Internet settings makes it create a new certificate: expect it, so the monitor
             # doesn't raise the alarm while this is under way (and trusts it, if the save here didn't).
             before = (config.load().get("router_cert_pins") or {}).get(s["router_host"])

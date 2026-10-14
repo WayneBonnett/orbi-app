@@ -859,6 +859,7 @@ function filteringCard() {
     fill(card, h("h2", {}, "Content filtering", h("button", { class: "btn small act", onclick: () => filteringSheet(f) }, "Change")),
       h("div", { style: "font-weight:600" }, p ? p.name : (f.dns.join(", ") || "Your ISP's DNS (no filtering)")),
       p ? h("div", { class: "muted small", style: "margin:2px 0 8px" }, p.summary) : null,
+      p && p.kind === "account" ? accountStatus(f.accounts[f.current]) : null,
       h("div", { class: "btns" },
         chip(c.youtube === "moderate" || c.youtube === "strict", `YouTube Restricted${c.youtube && c.youtube !== "unrestricted" ? ` (${c.youtube})` : ""}`),
         chip(!!c.safesearch, "SafeSearch"), chip(!!c.adult_blocked, "Adult sites blocked")),
@@ -881,27 +882,109 @@ function protectSheet() {
       }) }, "Add the rules")));
 }
 
-function filteringSheet(f) {
-  let choice = f.current || "adguard_family";
-  const opts = Object.entries(f.providers).map(([key, p]) => {
-    const radio = h("input", { type: "radio", name: "prov", value: key, checked: key === choice, onchange: () => (choice = key) });
-    return h("label", { class: "row tap" }, radio, h("div", { class: "main" }, h("div", { class: "name" }, p.name + (key === f.current ? " (current)" : "")),
-      h("div", { class: "meta", style: "white-space:normal" }, p.summary)));
+const FILTER_GROUPS = [
+  ["family", "Family filters", "Block adult sites on every device. No account needed."],
+  ["social", "Social media", "No account needed."],
+  ["security", "Security only", "Block malware and scams but NOT adult sites."],
+  ["account", "Your own account", "Most control: you choose what's blocked on the service's website. Needs an account there first."],
+];
+const ACCOUNT_STEPS = {
+  nextdns: ["Create an account at nextdns.io. The free plan covers 300,000 lookups a month; a busy house may need the paid one.",
+    "Under Parental Control and Security, choose what to block (adult sites, apps, SafeSearch, YouTube).",
+    "On the Setup page, find Linked IP. Copy its two DNS servers and its update link (it starts with https://link-ip.nextdns.io/)."],
+  opendns_home: ["Create a free OpenDNS Home account at opendns.com.",
+    "In the dashboard, add your home network and choose a filtering level or the categories to block.",
+    "Enter the email and password you sign in to OpenDNS with. Orbi Control only uses them to tell OpenDNS when your home's internet address changes."],
+};
+
+function accountStatus(a) {
+  if (!a || !a.connected) return h("div", { class: "error-text small" }, "Not connected: this filters nothing until you connect your account.");
+  if (!a.last) return h("div", { class: "muted small" }, "Connected");
+  return h("div", { class: a.last.ok ? "muted small" : "error-text small", style: "white-space:normal" },
+    `${a.last.ok ? "✓" : "✗"} ${a.last.detail} · ${ago(a.last.ts)}`);
+}
+
+function filteringSheet(f, preselect) {
+  let choice = preselect || f.current || "adguard_family";
+  const ready = h("input", { type: "checkbox" });
+  const accountBox = h("div", { class: "card", style: "margin:4px 0 8px" });
+  const apply = h("button", { class: "btn primary block" }, "Apply");
+  const syncButton = () => {
+    const a = f.providers[choice].kind === "account" ? f.accounts[choice] : null;
+    apply.disabled = !!a && (!a.connected || !ready.checked);
+  };
+  const showAccount = () => {
+    const p = f.providers[choice];
+    ready.checked = false;
+    accountBox.hidden = p.kind !== "account";
+    if (p.kind === "account") {
+      const a = f.accounts[choice];
+      fill(accountBox, h("div", { class: "name" }, `Set up ${p.name.replace(" (your account)", "")}`),
+        h("ol", { class: "small", style: "padding-left:18px;margin:6px 0" }, ...ACCOUNT_STEPS[choice].map((s) => h("li", {}, s))),
+        accountStatus(a),
+        h("button", { class: "btn small", style: "margin:8px 0", onclick: () => accountSheet(choice, f) }, a.connected ? "Change connection…" : "Connect account…"),
+        h("label", { class: "row tap" }, ready, h("div", { class: "main" }, h("div", { class: "name", style: "white-space:normal" }, "I've set up my account and chosen what it blocks"),
+          h("div", { class: "meta", style: "white-space:normal" }, "Until you do, every device in the house gets unfiltered internet."))));
+    }
+    syncButton();
+  };
+  ready.addEventListener("change", syncButton);
+  const sections = FILTER_GROUPS.map(([kind, title, note]) => {
+    const keys = Object.keys(f.providers).filter((k) => f.providers[k].kind === kind);
+    if (!keys.length) return null;
+    return [h("div", { class: "name", style: "margin-top:12px" }, title), h("div", { class: "muted small" }, note),
+      ...keys.map((key) => {
+        const p = f.providers[key];
+        const radio = h("input", { type: "radio", name: "prov", value: key, checked: key === choice, onchange: () => { choice = key; showAccount(); } });
+        return h("label", { class: "row tap" }, radio, h("div", { class: "main" }, h("div", { class: "name" }, p.name + (key === f.current ? " (current)" : "")),
+          h("div", { class: "meta", style: "white-space:normal" }, p.summary)));
+      }),
+      kind === "account" ? accountBox : null];
+  });
+  apply.addEventListener("click", async () => {
+    if (choice === f.current) { closeSheet(); return; }
+    apply.disabled = true;
+    try {
+      await api("/api/filtering", { body: { provider: choice, account_ready: ready.checked } });
+      closeSheet();
+      const r = await waitJob("filtering", "Updating the router");
+      toast(r && r.confirmed ? "Filter changed and verified" : "Filter changed; devices pick it up within a few minutes");
+    } catch (ex) { toast(ex.message); syncButton(); }
+    renderFamily();
   });
   openSheet(h("h3", {}, "Content filtering"),
     h("p", { class: "muted small", style: "margin:0" }, "Changes the DNS service your Orbi uses. The app checks the internet still works afterwards and undoes the change if not."),
-    ...opts,
-    h("button", { class: "btn primary block", onclick: async (e) => {
-      if (choice === f.current) { closeSheet(); return; }
-      e.currentTarget.disabled = true;
-      try {
-        await api("/api/filtering", { body: { provider: choice } });
-        closeSheet();
-        const r = await waitJob("filtering", "Updating the router");
-        toast(r && r.confirmed ? "Filter changed and verified" : "Filter changed; devices pick it up within a few minutes");
-      } catch (ex) { toast(ex.message); }
-      renderFamily();
-    } }, "Apply"));
+    ...sections.flat(), apply);
+  showAccount();
+}
+
+function accountSheet(key, f) {
+  const a = f.accounts[key];
+  const back = async () => filteringSheet(await api("/api/filtering"), key);
+  let fields, body;
+  if (key === "nextdns") {
+    const d1 = h("input", { value: a.dns[0] || "", placeholder: "45.90.28.…", inputmode: "decimal" });
+    const d2 = h("input", { value: a.dns[1] || "", placeholder: "45.90.30.…", inputmode: "decimal" });
+    const link = h("input", { type: "password", autocomplete: "off", placeholder: a.connected ? "Leave blank to keep the saved link" : "https://link-ip.nextdns.io/…" });
+    fields = [h("label", { class: "field" }, "DNS server 1", d1), h("label", { class: "field" }, "DNS server 2", d2),
+      h("label", { class: "field" }, "Linked IP update link", link)];
+    body = () => ({ dns: [d1.value, d2.value], link: link.value || null });
+  } else {
+    const user = h("input", { value: a.user || "", autocapitalize: "off", spellcheck: "false", autocomplete: "off" });
+    const pw = h("input", { type: "password", autocomplete: "new-password", placeholder: a.connected ? "Leave blank to keep the saved password" : "" });
+    const net = h("input", { value: a.network || "", placeholder: "Only if your account has more than one network" });
+    fields = [h("label", { class: "field" }, "OpenDNS email", user), h("label", { class: "field" }, "OpenDNS password", pw),
+      h("label", { class: "field" }, "Network name (optional)", net)];
+    body = () => ({ user: user.value, password: pw.value || null, network: net.value });
+  }
+  openSheet(h("h3", {}, `Connect ${f.providers[key].name.replace(" (your account)", "")}`), ...fields,
+    h("p", { class: "muted small" }, "Saved encrypted on this PC and never shown again. Orbi Control tries it straight away and then every 15 minutes, and alerts you if it stops working."),
+    h("div", { class: "btns" }, h("button", { class: "btn", onclick: back }, "Back"),
+      h("button", { class: "btn primary", onclick: (e) => act(e.currentTarget, async () => {
+        const r = await api(`/api/filtering/account/${key}`, { method: "PUT", body: body() });
+        if (r.ok) await back();
+        return { note: r.ok ? r.detail : `Saved, but it didn't work yet: ${r.detail}` };
+      }) }, "Save & test")));
 }
 
 // ---------- whole-house app & site blocking ----------

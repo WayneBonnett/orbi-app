@@ -35,7 +35,7 @@ def test_parse_rules_and_schedule():
     assert parse_schedule(everyday) == {"days": "0123456", "all_day": True, "start": "00:00", "end": "00:00"}
 
 
-def test_provider_detection():
+def test_provider_detection(tmp_config):
     assert filtering.provider_for(["94.140.14.15", "94.140.15.16"]) == "adguard_family"
     assert filtering.provider_for(["185.228.168.10"]) == "cleanbrowsing_adult"
     assert filtering.provider_for(["8.8.8.8"]) is None
