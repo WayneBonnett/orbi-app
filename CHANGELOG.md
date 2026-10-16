@@ -2,6 +2,13 @@
 
 What changed in each version, newest first. The same notes appear in the app under More → Updates.
 
+## 1.1.15 (2026-10-15)
+
+- New: every pop-up has an X in the top corner to close it, and it stays in view when you scroll a long list.
+- New: the remote-access check (SSH, Remote Desktop, VNC and the like) can be turned on or off in More → Remote access. It's off unless you turn it on; turning it on checks every device right away, then once a day.
+- Fixed: on iPhone, the Change PIN boxes on the More page ran off the side of the screen.
+- Fixed: in Break-in attempts, "Show what was typed" was cut off at the edge of the screen. It now shows on its own line.
+
 ## 1.1.14 (2026-10-13)
 
 - Fixed: an internet outage (or router-unreachable or PC-offline alert) that was still open when Orbi Control restarted stayed "ongoing" in History forever and lowered the uptime figures. It's now closed at the moment the internet was first seen working again, and the stuck one is fixed when you update.
