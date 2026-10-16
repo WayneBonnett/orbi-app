@@ -1036,10 +1036,21 @@ def create_app(monitor: Monitor) -> FastAPI:
         found = store.get("exposure") or {}
         devices = sorted(({**e, "services": [{"port": p, "name": exposure.PORTS.get(p, "port")} for p in e["ports"]]}
                           for e in found.values()), key=lambda e: (not e["ports"], e["name"].lower()))
-        return {"ts": store.get("exposure_ts"), "devices": devices, "ports": exposure.PORTS, "job": monitor.jobs.get("exposure")}
+        return {"enabled": bool(config.load().get("exposure_watch")), "ts": store.get("exposure_ts"), "devices": devices,
+                "ports": exposure.PORTS, "job": monitor.jobs.get("exposure")}
+
+    @app.put("/api/exposure")
+    def exposure_enable(body: EnabledBody):
+        config.save({"exposure_watch": body.enabled})
+        store.event("action", "Remote-access check turned " + ("on" if body.enabled else "off"), severity="info" if body.enabled else "warn")
+        if body.enabled:
+            monitor.run_job("exposure", lambda: len(monitor.check_exposure()))
+        return exposure_status()
 
     @app.post("/api/exposure/scan")
     def exposure_scan():
+        if not config.load().get("exposure_watch"):
+            raise HTTPException(400, "Turn on the remote-access check first")
         if not monitor.run_job("exposure", lambda: len(monitor.check_exposure())):
             raise HTTPException(409, "A check is already running")
         return {"ok": True}

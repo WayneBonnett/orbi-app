@@ -105,7 +105,9 @@ const ico = (name) => h("span", { class: "ico", html: ICONS[name] });
 // ---------- sheet ----------
 function openSheet(...content) {
   const sheet = $("#sheet");
-  sheet.replaceChildren(h("div", { class: "grab" }), ...content.flat().filter(Boolean));
+  sheet.replaceChildren(
+    h("div", { class: "sheet-close-holder" }, h("button", { class: "sheet-close", type: "button", "aria-label": "Close", title: "Close", onclick: closeSheet }, "✕")),
+    h("div", { class: "grab" }), ...content.flat().filter(Boolean));
   sheet.hidden = false; $("#sheet-backdrop").hidden = false;
   sheet.scrollTop = 0;
 }
@@ -735,12 +737,14 @@ async function renderSecurity(card) {
   let s;
   try { s = await api("/api/security"); } catch (e) { return fill(card, h("h2", {}, "Break-in attempts"), h("div", { class: "error-text" }, e.message)); }
   const label = { wrong: "Wrong PIN", locked: "Sent while locked out", ok: "Signed in" };
+  const wrap = "white-space:normal;overflow-wrap:anywhere";
   const reveal = h("input", { type: "checkbox", onchange: () => list.replaceChildren(...rows()) });
   const rows = () => s.attempts.length ? s.attempts.slice(0, 40).map((a) => h("div", { class: "row" }, h("div", { class: "main" },
     h("div", { class: "name", style: "white-space:normal" }, `${a.device || a.ip}${a.automated ? " · program" : ""}`),
-    h("div", { class: "meta" }, [fmtWhen(a.ts), label[a.outcome] || a.outcome, a.ip, a.mac,
-      reveal.checked ? (a.guess != null ? `typed “${a.guess}”` : "typed: erased (that device then signed in)") : null].filter(Boolean).join(" · ")),
-    a.automated || !/Mozilla/.test(a.agent || "") ? h("div", { class: "meta" }, `Sent by: ${a.agent || "no program name"}`) : null)))
+    h("div", { class: "meta", style: wrap }, [fmtWhen(a.ts), label[a.outcome] || a.outcome, a.ip, a.mac].filter(Boolean).join(" · ")),
+    reveal.checked ? h("div", { class: "meta", style: wrap + ";color:var(--text)" },
+      a.guess != null ? `Typed: “${a.guess}”` : "Typed: erased (that device then signed in)") : null,
+    a.automated || !/Mozilla/.test(a.agent || "") ? h("div", { class: "meta", style: wrap }, `Sent by: ${a.agent || "no program name"}`) : null)))
     : [h("div", { class: "muted small" }, "No wrong PINs in the last 30 days.")];
   const list = h("div", {}, ...rows());
   const block = h("input", { type: "checkbox", checked: s.block_pin_attackers, onchange: (e) =>
@@ -914,6 +918,19 @@ function pushCodeSheet(c, fresh) {
 function exposureCard() {
   const card = h("section", { class: "card" }, h("h2", {}, "Remote access"), h("div", { class: "muted small" }, h("span", { class: "spinner" })));
   const render = (x) => {
+    const on = h("input", { type: "checkbox", checked: x.enabled, onchange: (e) => act(null, async () => {
+      render(await api("/api/exposure", { method: "PUT", body: { enabled: e.target.checked } }));
+      if (e.target.checked) {
+        await waitJob("exposure", "Checking every device");
+        render(await api("/api/exposure"));
+      }
+    }).catch(() => render(x)) });
+    const toggle = h("label", { class: "switch" }, "Check every device once a day", on);
+    if (!x.enabled) {
+      fill(card, h("h2", {}, "Remote access"), toggle,
+        h("div", { class: "muted small", style: "margin-top:8px" }, "Off. When on, you're alerted when any device in the house starts accepting SSH, Remote Desktop, VNC, TeamViewer, AnyDesk or PowerShell remoting."));
+      return;
+    }
     const exposed = x.devices.filter((d) => d.ports.length);
     const check = h("button", { class: "btn small act", onclick: (e) => act(e.currentTarget, async () => {
       await api("/api/exposure/scan", { body: {} });
@@ -921,7 +938,7 @@ function exposureCard() {
       render(await api("/api/exposure"));
       return { note: "Check finished" };
     }) }, "Check now");
-    fill(card, h("h2", {}, "Remote access", check),
+    fill(card, h("h2", {}, "Remote access", check), toggle,
       !x.ts ? h("div", { class: "muted small" }, "Not checked yet. Runs once a day.")
         : exposed.length ? exposed.map((d) => h("div", { class: "row" }, h("div", { class: "main" },
           h("div", { class: "name" }, d.name), h("div", { class: "meta", style: "white-space:normal" }, `${d.services.map((s) => `${s.name} (${s.port})`).join(", ")} · ${d.ip}`))))

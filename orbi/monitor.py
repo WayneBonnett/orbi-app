@@ -1237,7 +1237,12 @@ class Monitor:
     # ---- remote-access watch: SSH, Remote Desktop, VNC and the like on any device in the house ----
     def exposure_loop(self):
         self.stop_event.wait(180)
-        self._every(lambda: 24 * 3600, self.check_exposure)
+        self._every(lambda: 3600, self._exposure_due)
+
+    def _exposure_due(self):
+        """Hourly look: a check runs once the last one is a day old, and only while the watch is turned on."""
+        if config.load().get("exposure_watch") and time.time() - (self.store.get("exposure_ts") or 0) >= 24 * 3600:
+            self.check_exposure()
 
     def check_exposure(self) -> dict:
         """Check every online device, this PC and the router. Alerts when a device starts accepting remote control;

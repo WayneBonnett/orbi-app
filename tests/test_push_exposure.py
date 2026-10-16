@@ -173,11 +173,33 @@ def test_device_going_offline_and_back_is_not_new(monitor, ports_open, fake_rout
 
 def test_exposure_api(client, ports_open):
     ports_open["192.168.1.22"] = {5938}
-    assert client.get("/api/exposure").json()["ts"] is None
-    assert client.post("/api/exposure/scan", json={}).status_code == 200
+    j = client.get("/api/exposure").json()
+    assert j["ts"] is None and j["enabled"] is False  # off until a parent turns it on
+    assert client.post("/api/exposure/scan", json={}).status_code == 400
+    assert client.put("/api/exposure", json={"enabled": True}).json()["enabled"] is True  # turning on checks right away
     assert wait_job(client, "exposure")["error"] is None
     j = client.get("/api/exposure").json()
     assert j["devices"][0]["name"] == "tv" and j["devices"][0]["services"] == [{"port": 5938, "name": "TeamViewer"}]
+    assert client.post("/api/exposure/scan", json={}).status_code == 200
+    assert wait_job(client, "exposure")["error"] is None
+    assert client.put("/api/exposure", json={"enabled": False}).json()["enabled"] is False
+    ev = next(e for e in client.get("/api/events").json() if e["title"] == "Remote-access check turned off")
+    assert ev["severity"] == "warn"
+
+
+def test_daily_check_only_runs_when_on_and_due(monitor, ports_open):
+    monitor.scan()
+    monitor._exposure_due()
+    assert monitor.store.get("exposure_ts") is None  # off by default
+    config.save({"exposure_watch": True})
+    monitor._exposure_due()
+    first = monitor.store.get("exposure_ts")
+    assert first is not None
+    monitor._exposure_due()
+    assert monitor.store.get("exposure_ts") == first  # not a day old yet
+    monitor.store.put("exposure_ts", first - 24 * 3600)
+    monitor._exposure_due()
+    assert monitor.store.get("exposure_ts") > first
 
 
 def test_real_scan_finds_a_listening_port():

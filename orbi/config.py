@@ -30,6 +30,7 @@ DEFAULTS = {
     "hold_new_devices": False,  # block never-seen devices until a parent approves them
     "protected_macs": [],  # never blocked (this PC is added automatically)
     "check_updates": True,  # look for new versions on GitHub twice a day (installing always needs a click)
+    "exposure_watch": False,  # once a day, check every device for SSH, Remote Desktop, VNC and the like
     "revoked_sessions": {},  # nonce -> expiry of session tokens that were signed out
 }
 
